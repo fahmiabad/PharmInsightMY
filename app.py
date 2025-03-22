@@ -38,7 +38,7 @@ def get_embedding(text):
     )
     return np.array(response.data[0].embedding, dtype=np.float32)
 
-# RAG logic with explanation toggle
+# RAG logic with direct and detailed Markdown response
 def answer_query_with_rag(query, index, docs, explain=True, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
     query_vector = get_embedding(query).reshape(1, -1)
     D, I = index.search(query_vector, k=k)
@@ -49,18 +49,17 @@ def answer_query_with_rag(query, index, docs, explain=True, threshold=SIMILARITY
 
         if explain:
             explain_prompt = f"""
-You are a clinical pharmacist. Based on the clinical reference text below, extract the answer to the question AND provide an explanation as if teaching a junior pharmacist.
+Based on the following clinical reference text, provide a direct and detailed answer to the question using Markdown formatting.
 
-Format your response using Markdown:
 **Direct Answer**
-- (Your concise answer)
+- Start with a specific, clear recommendation
 
 **Explanation**
-- (A bullet-point explanation)
-- Include clinical reasoning and important considerations.
+- Explain the rationale using bullet points
+- Include any relevant clinical considerations
 
 **References**
-- Cite the file name or page if available.
+- Mention file names and pages if relevant
 
 Reference:
 {context}
@@ -69,7 +68,7 @@ Question: {query}
 """
         else:
             explain_prompt = f"""
-Use the reference text below to provide a direct answer only — no explanation.
+Use the reference text below to provide a direct, concise answer only.
 
 Reference:
 {context}
@@ -80,11 +79,11 @@ Question: {query}
 
     else:
         explain_prompt = f"""
-You are a clinical pharmacist. The uploaded guidelines do not contain relevant information for the question below.
+The uploaded guidelines do not contain relevant information for the following clinical question:
 
 Question: {query}
 
-Please provide an evidence-based answer from your general knowledge, and clearly state that this information is *not found in the uploaded guidelines*.
+Please provide a direct, evidence-based answer from your knowledge. Do not include generic phrases or disclaimers. Make it clinically useful and clear.
 """
         source = "llm_fallback"
 
@@ -92,7 +91,7 @@ Please provide an evidence-based answer from your general knowledge, and clearly
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": explain_prompt}],
         temperature=0.2,
-        max_tokens=700
+        max_tokens=1000
     )
     answer = response.choices[0].message.content
     return {"answer": answer, "source": source, "chunks": matched_chunks}
@@ -131,7 +130,7 @@ if "email" not in st.session_state:
             st.error("Please enter a valid email address.")
     st.stop()
 
-# Load index and docs
+# Load index and metadata
 index, docs = load_index()
 
 st.success(f"Welcome, {st.session_state.email} 👋")
@@ -139,7 +138,7 @@ st.success(f"Welcome, {st.session_state.email} 👋")
 # Explanation toggle
 explain_toggle = st.toggle("Include explanation and references", value=True)
 
-# Query input
+# Input
 query = st.text_input("Ask a clinical question:", placeholder="e.g., Monitoring plan for amiodarone?")
 
 if st.button("Submit") and query:
