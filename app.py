@@ -71,10 +71,10 @@ def search_guidelines(query, model, index, texts, filenames, threshold=1.0):
 def get_llm_response(query):
     """
     Calls the OpenAI API to get a response for the query.
-    The API key is embedded directly in the code.
+    The API key is retrieved securely from Streamlit secrets.
     """
-    openai.api_key = "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
-    "  # Replace with your actual API key
+    # Retrieve the API key from secrets (ensure your secrets.toml is properly set up)
+    openai.api_key = st.secrets["openai"]["api_key"]
     
     try:
         response = openai.ChatCompletion.create(
