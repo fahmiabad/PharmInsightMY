@@ -105,7 +105,7 @@ if "email" not in st.session_state:
         if "@" in email:
             st.session_state.email = email
             save_email(email)
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Please enter a valid email address.")
     st.stop()
