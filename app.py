@@ -38,40 +38,61 @@ def get_embedding(text):
     )
     return np.array(response.data[0].embedding, dtype=np.float32)
 
-# RAG logic
-def answer_query_with_rag(query, index, docs, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
+# RAG logic with explanation toggle
+def answer_query_with_rag(query, index, docs, explain=True, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
     query_vector = get_embedding(query).reshape(1, -1)
     D, I = index.search(query_vector, k=k)
     matched_chunks = [docs[i] for i, dist in zip(I[0], D[0]) if dist < threshold]
 
     if matched_chunks:
         context = "\n\n".join([c['text'] for c in matched_chunks])
-        prompt = f"""
-You are a clinical pharmacist. Use ONLY the context below to answer the question accurately.
 
-Context:
+        if explain:
+            explain_prompt = f"""
+You are a clinical pharmacist. Based on the clinical reference text below, extract the answer to the question AND provide an explanation as if teaching a junior pharmacist.
+
+Format your response using Markdown:
+**Direct Answer**
+- (Your concise answer)
+
+**Explanation**
+- (A bullet-point explanation)
+- Include clinical reasoning and important considerations.
+
+**References**
+- Cite the file name or page if available.
+
+Reference:
 {context}
 
 Question: {query}
+"""
+        else:
+            explain_prompt = f"""
+Use the reference text below to provide a direct answer only — no explanation.
 
-If the answer is not found in the context, say: "Information not available in the uploaded guidelines."
+Reference:
+{context}
+
+Question: {query}
 """
         source = "guidelines"
+
     else:
-        prompt = f"""
+        explain_prompt = f"""
 You are a clinical pharmacist. The uploaded guidelines do not contain relevant information for the question below.
 
 Question: {query}
 
-Provide an evidence-based response from your general knowledge, and clearly state that this information is *not found in the uploaded guidelines*.
+Please provide an evidence-based answer from your general knowledge, and clearly state that this information is *not found in the uploaded guidelines*.
 """
         source = "llm_fallback"
 
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": explain_prompt}],
         temperature=0.2,
-        max_tokens=500
+        max_tokens=700
     )
     answer = response.choices[0].message.content
     return {"answer": answer, "source": source, "chunks": matched_chunks}
@@ -110,22 +131,27 @@ if "email" not in st.session_state:
             st.error("Please enter a valid email address.")
     st.stop()
 
-# Load index and ask questions
+# Load index and docs
 index, docs = load_index()
 
 st.success(f"Welcome, {st.session_state.email} 👋")
+
+# Explanation toggle
+explain_toggle = st.toggle("Include explanation and references", value=True)
+
+# Query input
 query = st.text_input("Ask a clinical question:", placeholder="e.g., Monitoring plan for amiodarone?")
 
 if st.button("Submit") and query:
-    with st.spinner("Searching uploaded documents..."):
-        result = answer_query_with_rag(query, index, docs)
+    with st.spinner("Searching uploaded documents and preparing response..."):
+        result = answer_query_with_rag(query, index, docs, explain=explain_toggle)
 
     if result["source"] == "guidelines":
         st.success("✅ Answer from uploaded guidelines:")
     else:
         st.warning("⚠️ Not found in uploaded guidelines. Answer from general knowledge:")
 
-    st.markdown(result["answer"])
+    st.markdown(result["answer"], unsafe_allow_html=True)
 
     if result["chunks"]:
         with st.expander("📄 Sources used"):
