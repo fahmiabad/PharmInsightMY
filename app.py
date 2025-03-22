@@ -1,172 +1,131 @@
+# STEP-BY-STEP: Pharmacist RAG App with Email Gate and Streamlit Hosting
+
+# --- Step 1: app.py ---
+
 import streamlit as st
-import os
-import io
-import faiss
-import numpy as np
-from PyPDF2 import PdfReader
-from sentence_transformers import SentenceTransformer
+import pandas as pd
 import openai
+import numpy as np
+import faiss
+import os
+import pickle
 
-# --- Functions for PDF Extraction and Guideline Processing ---
+# CONFIG
+openai.api_key = st.secrets.get("openai_api_key")  # Secure on Streamlit Cloud
+INDEX_PATH = "vector.index"
+DOCS_METADATA_PATH = "docs_metadata.pkl"
+EMAIL_DB = "emails.csv"
+SIMILARITY_THRESHOLD = 0.75
+K_RETRIEVE = 3
 
-def extract_text_from_pdf(file_obj):
-    """
-    Extracts text from a PDF file-like object.
-    """
-    reader = PdfReader(file_obj)
-    text = ""
-    for page in reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text
-    return text
+# Load FAISS index and metadata
+@st.cache_resource
+def load_index():
+    index = faiss.read_index(INDEX_PATH)
+    with open(DOCS_METADATA_PATH, "rb") as f:
+        metadata = pickle.load(f)
+    return index, metadata
 
-def load_local_guidelines(directory="pdf_guidelines"):
-    """
-    Loads guideline PDFs from a specified directory and converts them to text.
-    Returns a dictionary mapping filename to text.
-    """
-    guidelines = {}
-    if not os.path.exists(directory):
-        st.warning(f"Directory '{directory}' not found. Please create it and add PDF guidelines.")
-        return guidelines
+# Get embedding from OpenAI
+def get_embedding(text):
+    response = openai.Embedding.create(
+        input=text,
+        model="text-embedding-3-small"
+    )
+    return np.array(response['data'][0]['embedding'], dtype=np.float32)
 
-    for filename in os.listdir(directory):
-        if filename.lower().endswith(".pdf"):
-            pdf_path = os.path.join(directory, filename)
-            with open(pdf_path, "rb") as f:
-                text = extract_text_from_pdf(f)
-            guidelines[filename] = text
-    return guidelines
+# RAG logic
+def answer_query_with_rag(query, index, docs, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
+    query_vector = get_embedding(query).reshape(1, -1)
+    D, I = index.search(query_vector, k=k)
+    matched_chunks = [docs[i] for i, dist in zip(I[0], D[0]) if dist < threshold]
 
-def build_faiss_index(guidelines_dict, model):
-    """
-    Computes embeddings for the guideline texts and builds a FAISS index.
-    Returns the index, list of texts, and filenames.
-    """
-    texts = list(guidelines_dict.values())
-    filenames = list(guidelines_dict.keys())
-    embeddings = model.encode(texts)
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(np.array(embeddings, dtype=np.float32))
-    return index, texts, filenames
+    if matched_chunks:
+        context = "\n\n".join([c['text'] for c in matched_chunks])
+        prompt = f"""
+You are a clinical pharmacist. Use ONLY the context below to answer the question accurately.
 
-def search_guidelines(query, model, index, texts, filenames, threshold=1.0):
-    """
-    Encodes the query, searches the FAISS index, and checks if the best match is below a threshold.
-    Returns a tuple indicating if a match was found, the source filename, content, and the distance.
-    """
-    query_embedding = model.encode([query])
-    D, I = index.search(np.array(query_embedding, dtype=np.float32), k=1)
-    best_distance = D[0][0]
-    best_index = I[0][0]
-    if best_distance < threshold:
-        return True, filenames[best_index], texts[best_index], best_distance
+Context:
+{context}
+
+Question: {query}
+
+If the answer is not found in the context, say: \"Information not available in the uploaded guidelines.\"
+"""
+        source = "guidelines"
     else:
-        return False, None, None, best_distance
+        prompt = f"""
+You are a clinical pharmacist. The uploaded guidelines do not contain relevant information for the question below.
 
-# --- LLM Fallback Function ---
+Question: {query}
 
-def get_llm_response(query):
-    """
-    Calls the OpenAI API to get a response for the query.
-    The API key is retrieved securely from Streamlit secrets.
-    """
-    openai.api_key = st.secrets["openai"]["api_key"]
+Provide an evidence-based response from your general knowledge, and clearly state that this information is *not found in the uploaded guidelines*.
+"""
+        source = "llm_fallback"
 
-    try:
-        completion = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are an expert pharmacy assistant providing evidence-based information."},
-                {"role": "user", "content": query}
-            ]
-        )
-        answer = completion.choices[0].message.content.strip()
-        return answer
-    except Exception as e:
-        return f"Error contacting LLM: {e}"
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=500
+    )
+    answer = response['choices'][0]['message']['content']
+    return {"answer": answer, "source": source, "chunks": matched_chunks}
 
-# --- Streamlit App ---
+# Email collection
+def save_email(email):
+    if not os.path.exists(EMAIL_DB):
+        pd.DataFrame(columns=["email"]).to_csv(EMAIL_DB, index=False)
+    df = pd.read_csv(EMAIL_DB)
+    if email not in df["email"].values:
+        df = df.append({"email": email}, ignore_index=True)
+        df.to_csv(EMAIL_DB, index=False)
 
-def main():
-    st.title("PharmInsightMY")
-    st.markdown("""
-        **Heads Up, Fam:**
-        This app is strictly for research purposes only.
-        Do **NOT** rely on the info provided for making clinical decisions.
-        For more deets or inquiries, hit up: [fahmibinabad@gmail.com](mailto:fahmibinabad@gmail.com).
-    """)
+# UI starts
+st.set_page_config("PharmInsightMY by BigPharmi", layout="centered")
+st.title("\U0001F9E0 PharmInsightMY by BigPharmi")
+st.markdown("_Ask questions related to treatment, dosing, monitoring, and more._")
 
-    # Session State Initialization
-    if 'user_email' not in st.session_state:
-        st.session_state.user_email = ""
-    if 'model' not in st.session_state:
-        st.session_state.model = None
-    if 'index' not in st.session_state:
-        st.session_state.index = None
-    if 'texts' not in st.session_state:
-        st.session_state.texts = []
-    if 'filenames' not in st.session_state:
-        st.session_state.filenames = []
-    if 'uploaded_guidelines' not in st.session_state:
-        st.session_state.uploaded_guidelines = {}
+st.markdown("""
+<div style='background-color: #fff3cd; padding: 10px; border-left: 6px solid #ffecb5;'>
+⚠️ <strong>Disclaimer:</strong> This app is for <strong>research and educational purposes only</strong>. It should <strong>not</strong> be used for making actual clinical decisions on patients. 
+For feedback or collaboration, contact: <a href='mailto:fahmibinabad@gmail.com'>fahmibinabad@gmail.com</a>
+</div>
+""", unsafe_allow_html=True)
 
-    user_email = st.text_input("Enter your email (for future updates):", value=st.session_state.user_email)
-    if user_email:
-        st.session_state.user_email = user_email
-    st.write("Your email is:", st.session_state.user_email)
-
-    # Initialize the embedding model (only once)
-    if st.session_state.model is None:
-        with st.spinner("Initializing embedding model..."):
-            st.session_state.model = SentenceTransformer('all-MiniLM-L6-v2')
-
-    # Load guidelines from the local 'pdf_guidelines' folder
-    local_guidelines = load_local_guidelines()
-
-    # Option for the user to upload their own PDF guidelines
-    st.header("Upload Your Own PDF Guidelines (Optional)")
-    uploaded_files = st.file_uploader("Choose PDF files", type="pdf", accept_multiple_files=True)
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            try:
-                file_bytes = io.BytesIO(uploaded_file.read())
-                text = extract_text_from_pdf(file_bytes)
-                st.session_state.uploaded_guidelines[uploaded_file.name] = text
-                st.success(f"Uploaded {uploaded_file.name}")
-            except Exception as e:
-                st.error(f"Error processing {uploaded_file.name}: {e}")
-
-    # Merge local and uploaded guidelines
-    all_guidelines = {**local_guidelines, **st.session_state.uploaded_guidelines}
-    if not all_guidelines:
-        st.error("No guidelines available. Please add PDF guidelines locally or upload via the app.")
-        return
-
-    # Build the FAISS index (only once or when guidelines change)
-    if st.session_state.index is None or st.session_state.uploaded_guidelines:
-        with st.spinner("Building FAISS index..."):
-            st.session_state.index, st.session_state.texts, st.session_state.filenames = build_faiss_index(all_guidelines, st.session_state.model)
-        st.session_state.uploaded_guidelines = {}  # Clear uploaded guidelines after building the index
-
-    # Query Section
-    st.header("Query Guidelines")
-    query = st.text_input("Enter your query regarding medication or clinical information:")
-    if st.button("Search"):
-        if query:
-            with st.spinner("Searching guidelines..."):
-                found, source, content, distance = search_guidelines(query, st.session_state.model, st.session_state.index, st.session_state.texts, st.session_state.filenames, threshold=1.0)
-            if found:
-                st.success(f"Found a guideline match in '{source}' (distance: {distance:.2f}):")
-                st.write(content)
-            else:
-                st.warning("No relevant guideline found. Using LLM fallback:")
-                llm_response = get_llm_response(query)
-                st.write(llm_response)
+# Email gate
+if "email" not in st.session_state:
+    email = st.text_input("Enter your email to access the tool:")
+    if st.button("Continue"):
+        if "@" in email:
+            st.session_state.email = email
+            save_email(email)
+            st.experimental_rerun()
         else:
-            st.error("Please enter a query.")
+            st.error("Please enter a valid email address.")
+    st.stop()
 
-if __name__ == "__main__":
-    main()
+# Load index and ask questions
+index, docs = load_index()
+
+st.success(f"Welcome, {st.session_state.email} \U0001F44B")
+query = st.text_input("Ask a clinical question:", placeholder="e.g., Monitoring plan for amiodarone?")
+
+if st.button("Submit") and query:
+    with st.spinner("Searching uploaded documents..."):
+        result = answer_query_with_rag(query, index, docs)
+
+    if result["source"] == "guidelines":
+        st.success("✅ Answer from uploaded guidelines:")
+    else:
+        st.warning("⚠️ Not found in uploaded guidelines. Answer from general knowledge:")
+
+    st.markdown(result["answer"])
+
+    if result["chunks"]:
+        with st.expander("\U0001F4C4 Sources used"):
+            for i, chunk in enumerate(result["chunks"]):
+                src = chunk.get("source", "unknown")
+                page = f"(Page {chunk['page']})" if chunk.get("page") else ""
+                st.markdown(f"**{src} {page}**")
+                st.text(chunk["text"])
