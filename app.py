@@ -4,14 +4,14 @@
 
 import streamlit as st
 import pandas as pd
-import openai
 import numpy as np
 import faiss
 import os
 import pickle
+from openai import OpenAI
 
 # CONFIG
-openai.api_key = st.secrets.get("openai_api_key")  # Secure on Streamlit Cloud
+client = OpenAI()
 INDEX_PATH = "vector.index"
 DOCS_METADATA_PATH = "docs_metadata.pkl"
 EMAIL_DB = "emails.csv"
@@ -26,13 +26,13 @@ def load_index():
         metadata = pickle.load(f)
     return index, metadata
 
-# Get embedding from OpenAI
+# Get embedding using new OpenAI SDK
 def get_embedding(text):
-    response = openai.Embedding.create(
-        input=text,
+    response = client.embeddings.create(
+        input=[text],
         model="text-embedding-3-small"
     )
-    return np.array(response['data'][0]['embedding'], dtype=np.float32)
+    return np.array(response.data[0].embedding, dtype=np.float32)
 
 # RAG logic
 def answer_query_with_rag(query, index, docs, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
@@ -63,13 +63,13 @@ Provide an evidence-based response from your general knowledge, and clearly stat
 """
         source = "llm_fallback"
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
         max_tokens=500
     )
-    answer = response['choices'][0]['message']['content']
+    answer = response.choices[0].message.content
     return {"answer": answer, "source": source, "chunks": matched_chunks}
 
 # Email collection
