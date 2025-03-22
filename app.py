@@ -7,7 +7,12 @@ import pickle
 from openai import OpenAI
 
 # CONFIG
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"])
+try:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"])
+except KeyError:
+    st.error("❌ OPENAI_API_KEY is missing. Please add it in Streamlit Secrets.")
+    st.stop()
+
 INDEX_PATH = "vector.index"
 DOCS_METADATA_PATH = "docs_metadata.pkl"
 EMAIL_DB = "emails.csv"
@@ -17,6 +22,9 @@ K_RETRIEVE = 3
 # Load FAISS index and metadata
 @st.cache_resource
 def load_index():
+    if not os.path.exists(INDEX_PATH) or not os.path.exists(DOCS_METADATA_PATH):
+        st.error("❌ Required index files are missing. Please upload vector.index and docs_metadata.pkl.")
+        st.stop()
     index = faiss.read_index(INDEX_PATH)
     with open(DOCS_METADATA_PATH, "rb") as f:
         metadata = pickle.load(f)
@@ -74,7 +82,8 @@ def save_email(email):
         pd.DataFrame(columns=["email"]).to_csv(EMAIL_DB, index=False)
     df = pd.read_csv(EMAIL_DB)
     if email not in df["email"].values:
-        df = df.append({"email": email}, ignore_index=True)
+        new_row = pd.DataFrame([{"email": email}])
+        df = pd.concat([df, new_row], ignore_index=True)
         df.to_csv(EMAIL_DB, index=False)
 
 # UI starts
