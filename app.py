@@ -5,7 +5,7 @@ import faiss
 import numpy as np
 from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
-import openai  # For LLM fallback
+import openai
 
 # --- Functions for PDF Extraction and Guideline Processing ---
 
@@ -73,9 +73,8 @@ def get_llm_response(query):
     Calls the OpenAI API to get a response for the query.
     The API key is retrieved securely from Streamlit secrets.
     """
-    # Retrieve the API key from secrets (ensure your secrets.toml is properly set up)
     openai.api_key = st.secrets["openai"]["api_key"]
-    
+
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
@@ -92,55 +91,73 @@ def get_llm_response(query):
 # --- Streamlit App ---
 
 def main():
-    # App Title and Disclaimer
     st.title("PharmInsightMY")
     st.markdown("""
-    **Heads Up, Fam:**  
-    This app is strictly for research purposes only.  
-    Do **NOT** rely on the info provided for making clinical decisions.  
-    For more deets or inquiries, hit up: [fahmibinabad@gmail.com](mailto:fahmibinabad@gmail.com).
+        **Heads Up, Fam:**
+        This app is strictly for research purposes only.
+        Do **NOT** rely on the info provided for making clinical decisions.
+        For more deets or inquiries, hit up: [fahmibinabad@gmail.com](mailto:fahmibinabad@gmail.com).
     """)
-    
-    # Session State for Email Storage
+
+    # Session State Initialization
     if 'user_email' not in st.session_state:
         st.session_state.user_email = ""
+    if 'model' not in st.session_state:
+        st.session_state.model = None
+    if 'index' not in st.session_state:
+        st.session_state.index = None
+    if 'texts' not in st.session_state:
+        st.session_state.texts = []
+    if 'filenames' not in st.session_state:
+        st.session_state.filenames = []
+    if 'uploaded_guidelines' not in st.session_state:
+        st.session_state.uploaded_guidelines = {}
+
     user_email = st.text_input("Enter your email (for future updates):", value=st.session_state.user_email)
     if user_email:
         st.session_state.user_email = user_email
     st.write("Your email is:", st.session_state.user_email)
-    
-    # Initialize the embedding model
-    st.info("Initializing embedding model...")
-    model = SentenceTransformer('all-MiniLM-L6-v2')
-    
+
+    # Initialize the embedding model (only once)
+    if st.session_state.model is None:
+        with st.spinner("Initializing embedding model..."):
+            st.session_state.model = SentenceTransformer('all-MiniLM-L6-v2')
+
     # Load guidelines from the local 'pdf_guidelines' folder
     local_guidelines = load_local_guidelines()
-    
+
     # Option for the user to upload their own PDF guidelines
     st.header("Upload Your Own PDF Guidelines (Optional)")
     uploaded_files = st.file_uploader("Choose PDF files", type="pdf", accept_multiple_files=True)
-    uploaded_guidelines = {}
     if uploaded_files:
         for uploaded_file in uploaded_files:
-            file_bytes = io.BytesIO(uploaded_file.read())
-            text = extract_text_from_pdf(file_bytes)
-            uploaded_guidelines[uploaded_file.name] = text
-    
+            try:
+                file_bytes = io.BytesIO(uploaded_file.read())
+                text = extract_text_from_pdf(file_bytes)
+                st.session_state.uploaded_guidelines[uploaded_file.name] = text
+                st.success(f"Uploaded {uploaded_file.name}")
+            except Exception as e:
+                st.error(f"Error processing {uploaded_file.name}: {e}")
+
     # Merge local and uploaded guidelines
-    all_guidelines = {**local_guidelines, **uploaded_guidelines}
+    all_guidelines = {**local_guidelines, **st.session_state.uploaded_guidelines}
     if not all_guidelines:
         st.error("No guidelines available. Please add PDF guidelines locally or upload via the app.")
         return
-    
-    # Build the FAISS index from the combined guidelines
-    index, texts, filenames = build_faiss_index(all_guidelines, model)
-    
+
+    # Build the FAISS index (only once or when guidelines change)
+    if st.session_state.index is None or st.session_state.uploaded_guidelines:
+        with st.spinner("Building FAISS index..."):
+            st.session_state.index, st.session_state.texts, st.session_state.filenames = build_faiss_index(all_guidelines, st.session_state.model)
+        st.session_state.uploaded_guidelines = {}  # Clear uploaded guidelines after building the index
+
     # Query Section
     st.header("Query Guidelines")
     query = st.text_input("Enter your query regarding medication or clinical information:")
     if st.button("Search"):
         if query:
-            found, source, content, distance = search_guidelines(query, model, index, texts, filenames, threshold=1.0)
+            with st.spinner("Searching guidelines..."):
+                found, source, content, distance = search_guidelines(query, st.session_state.model, st.session_state.index, st.session_state.texts, st.session_state.filenames, threshold=1.0)
             if found:
                 st.success(f"Found a guideline match in '{source}' (distance: {distance:.2f}):")
                 st.write(content)
