@@ -1,0 +1,49 @@
+import os
+import openai
+import faiss
+import numpy as np
+import pickle
+from document_loader import load_documents_with_metadata
+
+# CONFIG
+openai.api_key = "sk-..."  # Replace this with your actual key when running locally
+DOCS_FOLDER = "docs"
+INDEX_OUTPUT = "vector.index"
+METADATA_OUTPUT = "docs_metadata.pkl"
+
+# EMBEDDING FUNCTION
+def embed_texts(texts, batch_size=100):
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        response = openai.Embedding.create(
+            input=batch,
+            model="text-embedding-3-small"
+        )
+        batch_embeddings = [np.array(item['embedding'], dtype=np.float32) for item in response['data']]
+        all_embeddings.extend(batch_embeddings)
+    return np.vstack(all_embeddings)
+
+# MAIN
+if __name__ == "__main__":
+    print(f"📂 Loading documents from `{DOCS_FOLDER}`...")
+    chunks = load_documents_with_metadata(DOCS_FOLDER)
+
+    if not chunks:
+        print("❌ No documents found. Please add PDFs or DOCX files to the docs/ folder.")
+        exit()
+
+    print(f"✂️ Extracted {len(chunks)} text chunks. Embedding now...")
+    texts = [chunk["text"] for chunk in chunks]
+    embeddings = embed_texts(texts)
+
+    print("💾 Creating FAISS index...")
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(embeddings)
+    faiss.write_index(index, INDEX_OUTPUT)
+
+    print(f"💾 Saving metadata to `{METADATA_OUTPUT}`...")
+    with open(METADATA_OUTPUT, "wb") as f:
+        pickle.dump(chunks, f)
+
+    print("✅ Index built successfully.")
