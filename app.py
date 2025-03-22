@@ -1,7 +1,3 @@
-# STEP-BY-STEP: Pharmacist RAG App with Email Gate and Streamlit Hosting
-
-# --- Step 1: app.py ---
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,7 +7,7 @@ import pickle
 from openai import OpenAI
 
 # CONFIG
-client = OpenAI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"])
 INDEX_PATH = "vector.index"
 DOCS_METADATA_PATH = "docs_metadata.pkl"
 EMAIL_DB = "emails.csv"
@@ -26,7 +22,7 @@ def load_index():
         metadata = pickle.load(f)
     return index, metadata
 
-# Get embedding using new OpenAI SDK
+# Get embedding using OpenAI SDK v1.x
 def get_embedding(text):
     response = client.embeddings.create(
         input=[text],
@@ -50,7 +46,7 @@ Context:
 
 Question: {query}
 
-If the answer is not found in the context, say: \"Information not available in the uploaded guidelines.\"
+If the answer is not found in the context, say: "Information not available in the uploaded guidelines."
 """
         source = "guidelines"
     else:
@@ -83,7 +79,7 @@ def save_email(email):
 
 # UI starts
 st.set_page_config("PharmInsightMY by BigPharmi", layout="centered")
-st.title("\U0001F9E0 PharmInsightMY by BigPharmi")
+st.title("🧠 PharmInsightMY by BigPharmi")
 st.markdown("_Ask questions related to treatment, dosing, monitoring, and more._")
 
 st.markdown("""
@@ -108,7 +104,7 @@ if "email" not in st.session_state:
 # Load index and ask questions
 index, docs = load_index()
 
-st.success(f"Welcome, {st.session_state.email} \U0001F44B")
+st.success(f"Welcome, {st.session_state.email} 👋")
 query = st.text_input("Ask a clinical question:", placeholder="e.g., Monitoring plan for amiodarone?")
 
 if st.button("Submit") and query:
@@ -123,7 +119,7 @@ if st.button("Submit") and query:
     st.markdown(result["answer"])
 
     if result["chunks"]:
-        with st.expander("\U0001F4C4 Sources used"):
+        with st.expander("📄 Sources used"):
             for i, chunk in enumerate(result["chunks"]):
                 src = chunk.get("source", "unknown")
                 page = f"(Page {chunk['page']})" if chunk.get("page") else ""
