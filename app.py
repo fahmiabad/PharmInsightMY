@@ -76,14 +76,14 @@ def get_llm_response(query):
     openai.api_key = st.secrets["openai"]["api_key"]
 
     try:
-        response = openai.ChatCompletion.create(
+        completion = openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are an expert pharmacy assistant providing evidence-based information."},
                 {"role": "user", "content": query}
             ]
         )
-        answer = response.choices[0].message.content.strip()
+        answer = completion.choices[0].message.content.strip()
         return answer
     except Exception as e:
         return f"Error contacting LLM: {e}"
