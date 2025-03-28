@@ -6,60 +6,125 @@ import os
 import pickle
 from openai import OpenAI
 
-# CONFIG
+# ======================
+# 1. CONFIGURATION
+# ======================
+# Set up your OpenAI client using your API key.
 try:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"])
 except KeyError:
     st.error("❌ OPENAI_API_KEY is missing. Please add it in Streamlit Secrets.")
     st.stop()
 
+# Define file paths for pre-loaded documents (if available)
 INDEX_PATH = "vector.index"
 DOCS_METADATA_PATH = "docs_metadata.pkl"
-EMAIL_DB = "emails.csv"
 SIMILARITY_THRESHOLD = 0.75
 K_RETRIEVE = 3
 
-# Load FAISS index and metadata
+# ======================
+# 2. LOAD PRE-LOADED DOCUMENTS
+# ======================
 @st.cache_resource
-def load_index():
+def load_preloaded_index():
+    # Try to load the pre-built FAISS index and metadata
     if not os.path.exists(INDEX_PATH) or not os.path.exists(DOCS_METADATA_PATH):
-        st.error("❌ Required index files are missing. Please upload vector.index and docs_metadata.pkl.")
-        st.stop()
+        st.warning("Pre-loaded index files not found. The app will use only uploaded documents.")
+        return None, []
     index = faiss.read_index(INDEX_PATH)
     with open(DOCS_METADATA_PATH, "rb") as f:
         metadata = pickle.load(f)
     return index, metadata
 
-# Get embedding using OpenAI SDK v1.x
+# ======================
+# 3. EMBEDDING FUNCTION
+# ======================
 def get_embedding(text):
+    # Get the text embedding from OpenAI
     response = client.embeddings.create(
         input=[text],
         model="text-embedding-3-small"
     )
     return np.array(response.data[0].embedding, dtype=np.float32)
 
-# RAG logic with direct and detailed Markdown response
-def answer_query_with_rag(query, index, docs, explain=True, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
+# ======================
+# 4. PROCESS USER-UPLOADED DOCUMENTS
+# ======================
+@st.cache_data
+def process_uploaded_documents(uploaded_files):
+    """
+    This function reads the uploaded files, extracts their text, and creates a FAISS index.
+    It returns both the index and a list of document metadata.
+    """
+    user_docs = []
+    embeddings = []
+    for file in uploaded_files:
+        # For simplicity, assume the file is a text file. For PDFs or Word docs,
+        # you would need additional processing.
+        content = file.read().decode("utf-8")
+        doc = {"text": content, "source": file.name}
+        user_docs.append(doc)
+        emb = get_embedding(content)
+        embeddings.append(emb)
+    if embeddings:
+        embeddings = np.array(embeddings)
+        dimension = embeddings.shape[1]
+        index = faiss.IndexFlatL2(dimension)
+        index.add(embeddings)
+    else:
+        index = None
+    return index, user_docs
+
+# ======================
+# 5. SEARCH FUNCTION
+# ======================
+def search_documents(query, pre_index, pre_docs, user_index, user_docs, threshold=SIMILARITY_THRESHOLD, k=K_RETRIEVE):
+    """
+    This function searches both pre-loaded and user-uploaded document indices for relevant text.
+    It returns a list of matching document chunks.
+    """
     query_vector = get_embedding(query).reshape(1, -1)
-    D, I = index.search(query_vector, k=k)
-    matched_chunks = [docs[i] for i, dist in zip(I[0], D[0]) if dist < threshold]
+    results = []
 
-    if matched_chunks:
-        context = "\n\n".join([c['text'] for c in matched_chunks])
+    # Search in pre-loaded documents if available
+    if pre_index is not None:
+        D, I = pre_index.search(query_vector, k)
+        for i, dist in zip(I[0], D[0]):
+            if dist < threshold:
+                results.append(pre_docs[i])
+                
+    # Search in user-uploaded documents if available
+    if user_index is not None:
+        D, I = user_index.search(query_vector, k)
+        for i, dist in zip(I[0], D[0]):
+            if dist < threshold:
+                results.append(user_docs[i])
+    return results
 
-        if explain:
-            explain_prompt = f"""
-Based on the following clinical reference text, provide a direct and detailed answer to the question using Markdown formatting.
+# ======================
+# 6. ANSWER GENERATION FUNCTION
+# ======================
+def answer_query(query, pre_index, pre_docs, user_index, user_docs, include_explanation=True):
+    """
+    This function builds a prompt for the language model based on search results.
+    If matching documents are found, it includes their text as context; otherwise, it falls back on general LLM knowledge.
+    """
+    results = search_documents(query, pre_index, pre_docs, user_index, user_docs)
+    if results:
+        context = "\n\n".join([r["text"] for r in results])
+        if include_explanation:
+            prompt = f"""
+Based on the following reference text, provide a direct and detailed answer to the question using Markdown formatting.
 
 **Direct Answer**
-- Start with a specific, clear recommendation
+- Start with a clear recommendation
 
 **Explanation**
 - Explain the rationale using bullet points
-- Include any relevant clinical considerations
+- Include any relevant considerations
 
 **References**
-- Mention file names and pages if relevant
+- Mention file names if applicable
 
 Reference:
 {context}
@@ -67,95 +132,76 @@ Reference:
 Question: {query}
 """
         else:
-            explain_prompt = f"""
-Use the reference text below to provide a direct, concise answer only.
+            prompt = f"""
+Use the reference text below to provide a direct, concise answer.
 
 Reference:
 {context}
 
 Question: {query}
 """
-        source = "guidelines"
-
+        source = "Retrieved Documents"
     else:
-        explain_prompt = f"""
-The uploaded guidelines do not contain relevant information for the following clinical question:
+        prompt = f"""
+No relevant document was found. Using general knowledge, provide a direct, evidence-based answer to the following question:
 
 Question: {query}
 
-Please provide a direct, evidence-based answer from your knowledge. Do not include generic phrases or disclaimers. Make it clinically useful and clear.
+Please note: This answer is generated based on general knowledge and does not reference specific guidelines.
 """
-        source = "llm_fallback"
+        source = "LLM General Knowledge"
 
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": explain_prompt}],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
         max_tokens=1000
     )
     answer = response.choices[0].message.content
-    return {"answer": answer, "source": source, "chunks": matched_chunks}
+    return {"answer": answer, "source": source, "results": results}
 
-# Email collection
-def save_email(email):
-    if not os.path.exists(EMAIL_DB):
-        pd.DataFrame(columns=["email"]).to_csv(EMAIL_DB, index=False)
-    df = pd.read_csv(EMAIL_DB)
-    if email not in df["email"].values:
-        new_row = pd.DataFrame([{"email": email}])
-        df = pd.concat([df, new_row], ignore_index=True)
-        df.to_csv(EMAIL_DB, index=False)
+# ======================
+# 7. USER INTERFACE (UI)
+# ======================
+st.set_page_config("PharmInsight - Customizable Document Search", layout="centered")
+st.title("PharmInsight for Pharmacists")
+st.markdown("Ask your questions related to clinical guidelines, policies, or any relevant topics.")
 
-# UI starts
-st.set_page_config("PharmInsightMY by BigPharmi", layout="centered")
-st.title("🧠 PharmInsightMY by BigPharmi")
-st.markdown("_Ask questions related to treatment, dosing, monitoring, and more._")
+# Option to upload additional documents
+st.markdown("### Upload Your Documents (Optional)")
+uploaded_files = st.file_uploader("Upload documents (text files)", accept_multiple_files=True, type=["txt"])
+# (Note: To support PDFs or Word files, you’d need to add file parsing logic.)
 
-st.markdown("""
-<div style='background-color: #fff3cd; padding: 10px; border-left: 6px solid #ffecb5;'>
-⚠️ <strong>Disclaimer:</strong> This app is for <strong>research and educational purposes only</strong>. It should <strong>not</strong> be used for making actual clinical decisions on patients. 
-For feedback or collaboration, contact: <a href='mailto:fahmibinabad@gmail.com'>fahmibinabad@gmail.com</a>
-</div>
-""", unsafe_allow_html=True)
+# Process the user-uploaded documents if any files are provided
+user_index, user_docs = (None, [])
+if uploaded_files:
+    user_index, user_docs = process_uploaded_documents(uploaded_files)
 
-# Email gate
-if "email" not in st.session_state:
-    email = st.text_input("Enter your email to access the tool:")
-    if st.button("Continue"):
-        if "@" in email:
-            st.session_state.email = email
-            save_email(email)
-            st.rerun()
-        else:
-            st.error("Please enter a valid email address.")
-    st.stop()
+# Load pre-loaded documents from your local storage (if available)
+pre_index, pre_docs = load_preloaded_index()
 
-# Load index and metadata
-index, docs = load_index()
+# Input area for the user query
+st.markdown("### Enter Your Query")
+query = st.text_input("Type your question here", placeholder="e.g., What is the recommended monitoring plan for amiodarone?")
 
-st.success(f"Welcome, {st.session_state.email} 👋")
+# Option to include a detailed explanation and references
+include_explanation = st.checkbox("Include explanation and references", value=True)
 
-# Explanation toggle
-explain_toggle = st.toggle("Include explanation and references", value=True)
-
-# Input
-query = st.text_input("Ask a clinical question:", placeholder="e.g., Monitoring plan for amiodarone?")
-
+# When the user clicks 'Submit', process the query
 if st.button("Submit") and query:
-    with st.spinner("Searching uploaded documents and preparing response..."):
-        result = answer_query_with_rag(query, index, docs, explain=explain_toggle)
-
-    if result["source"] == "guidelines":
-        st.success("✅ Answer from uploaded guidelines:")
+    with st.spinner("Searching documents and generating answer..."):
+        result = answer_query(query, pre_index, pre_docs, user_index, user_docs, include_explanation=include_explanation)
+    
+    if result["source"] == "Retrieved Documents":
+        st.success("Answer based on the provided documents:")
     else:
-        st.warning("⚠️ Not found in uploaded guidelines. Answer from general knowledge:")
-
+        st.warning("No matching document found; answer generated from general knowledge:")
+    
     st.markdown(result["answer"], unsafe_allow_html=True)
-
-    if result["chunks"]:
-        with st.expander("📄 Sources used"):
-            for i, chunk in enumerate(result["chunks"]):
-                src = chunk.get("source", "unknown")
-                page = f"(Page {chunk['page']})" if chunk.get("page") else ""
-                st.markdown(f"**{src} {page}**")
-                st.text(chunk["text"])
+    
+    # Optionally, show the sources used for the answer
+    if result["results"]:
+        with st.expander("📄 Sources Used"):
+            for idx, doc in enumerate(result["results"]):
+                st.markdown(f"**Source: {doc['source']}**")
+                st.text(doc["text"])
