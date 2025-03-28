@@ -11,7 +11,8 @@ from openai import OpenAI
 # ======================
 # Set up your OpenAI client using your API key.
 try:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY") or st.secrets["OPENAI_API_KEY"])
+    client = OpenAI(api_key=os.getenv("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
+") or st.secrets["OPENAI_API_KEY"])
 except KeyError:
     st.error("❌ OPENAI_API_KEY is missing. Please add it in Streamlit Secrets.")
     st.stop()
