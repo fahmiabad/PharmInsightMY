@@ -107,46 +107,52 @@ def answer_query(query, pre_index, pre_docs, user_index, user_docs, include_expl
     """
     Builds a prompt for the language model based on search results.
     If relevant documents are found, includes them as context; otherwise, falls back on general knowledge.
+    This updated version directs the model to read, analyze, and synthesize the document content before answering.
     """
     results = search_documents(query, pre_index, pre_docs, user_index, user_docs)
+    
     if results:
+        # Combine the retrieved texts; you might consider adding titles/headings if available
         context = "\n\n".join([r["text"] for r in results])
+        
+        # Revised prompt that instructs the LLM to understand and analyze the document content deeply
         if include_explanation:
             prompt = f"""
-Based on the following reference text, provide a direct and detailed answer to the question using Markdown formatting.
+Read the following document excerpts carefully. Analyze the content and extract key information relevant to the query. Then, provide a direct, evidence-based answer with a clear recommendation and an explanation.
 
-**Direct Answer**
-- Start with a clear recommendation
+**Direct Recommendation:**
+- Begin by providing your recommendation clearly.
 
-**Explanation**
-- Explain the rationale using bullet points
-- Include any relevant considerations
+**Detailed Explanation:**
+- Explain your reasoning with bullet points highlighting key insights.
+- Ensure that your answer is synthesized from the provided text excerpts.
 
-**References**
-- Mention file names if applicable
-
-Reference:
+**Document Excerpts:**
 {context}
 
-Question: {query}
+**Question:**
+{query}
 """
         else:
             prompt = f"""
-Use the reference text below to provide a direct, concise answer.
+Read the following document excerpts carefully and extract the most relevant information to provide a direct answer to the question.
 
-Reference:
+**Document Excerpts:**
 {context}
 
-Question: {query}
+**Question:**
+{query}
 """
+
         source = "Retrieved Documents"
+        
     else:
         prompt = f"""
 No relevant document was found. Using general knowledge, provide a direct, evidence-based answer to the following question:
 
 Question: {query}
 
-Please note: This answer is generated based on general knowledge and does not reference specific guidelines.
+Note: This answer is generated based on general knowledge and does not reference specific guidelines.
 """
         source = "LLM General Knowledge"
 
