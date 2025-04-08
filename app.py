@@ -5,6 +5,7 @@ import faiss
 import os
 import pickle
 from openai import OpenAI
+from PyPDF2 import PdfReader  # Make sure to install PyPDF2 (pip install PyPDF2)
 
 # ============================================
 # 1. CONFIGURATION AND OPENAI CLIENT SETUP
@@ -15,7 +16,6 @@ except KeyError:
     st.error("❌ OPENAI_API_KEY is missing. Please add it in Streamlit Secrets.")
     st.stop()
 
-# Define file paths for pre‑loaded documents (if available)
 INDEX_PATH = "vector.index"
 DOCS_METADATA_PATH = "docs_metadata.pkl"
 SIMILARITY_THRESHOLD = 0.75
@@ -55,17 +55,37 @@ def get_embedding(text):
 def process_uploaded_documents(uploaded_files):
     """
     Reads the uploaded files, extracts their text, and creates a FAISS index.
-    For simplicity, this example assumes text files.
+    Handles both text files and PDF files.
     """
     user_docs = []
     embeddings = []
     for file in uploaded_files:
-        # Assuming a text file; for PDFs or Word documents, you would add parsing logic.
-        content = file.read().decode("utf-8")
-        doc = {"text": content, "source": file.name}
+        file_name = file.name.lower()
+        if file_name.endswith(".pdf"):
+            # Parse PDF file using PyPDF2
+            try:
+                pdf_reader = PdfReader(file)
+                text = ""
+                for page in pdf_reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n\n"
+            except Exception as e:
+                st.error(f"Error reading PDF file {file.name}: {e}")
+                continue
+        else:
+            # Assuming a text file
+            try:
+                text = file.read().decode("utf-8")
+            except Exception as e:
+                st.error(f"Error reading file {file.name}: {e}")
+                continue
+        
+        doc = {"text": text, "source": file.name}
         user_docs.append(doc)
-        emb = get_embedding(content)
+        emb = get_embedding(text)
         embeddings.append(emb)
+    
     if embeddings:
         embeddings = np.array(embeddings)
         dimension = embeddings.shape[1]
@@ -104,28 +124,19 @@ def search_documents(query, pre_index, pre_docs, user_index, user_docs, threshol
 # 6. ANSWER GENERATION FUNCTION
 # ============================================
 def answer_query(query, pre_index, pre_docs, user_index, user_docs, include_explanation=True):
-    """
-    Builds a prompt for the language model based on search results.
-    If relevant documents are found, includes them as context; otherwise, falls back on general knowledge.
-    This updated version directs the model to read, analyze, and synthesize the document content before answering.
-    """
     results = search_documents(query, pre_index, pre_docs, user_index, user_docs)
-    
     if results:
-        # Combine the retrieved texts; you might consider adding titles/headings if available
         context = "\n\n".join([r["text"] for r in results])
-        
-        # Revised prompt that instructs the LLM to understand and analyze the document content deeply
         if include_explanation:
             prompt = f"""
-Read the following document excerpts carefully. Analyze the content and extract key information relevant to the query. Then, provide a direct, evidence-based answer with a clear recommendation and an explanation.
+Read the following document excerpts carefully and analyze the content. Then, provide a direct answer with a clear recommendation and an explanation based on the excerpts.
 
 **Direct Recommendation:**
-- Begin by providing your recommendation clearly.
+- Begin with your clear recommendation.
 
-**Detailed Explanation:**
-- Explain your reasoning with bullet points highlighting key insights.
-- Ensure that your answer is synthesized from the provided text excerpts.
+**Explanation:**
+- Bullet the key reasons and insights.
+- Synthesize the relevant points from the excerpts.
 
 **Document Excerpts:**
 {context}
@@ -135,7 +146,7 @@ Read the following document excerpts carefully. Analyze the content and extract 
 """
         else:
             prompt = f"""
-Read the following document excerpts carefully and extract the most relevant information to provide a direct answer to the question.
+Read the document excerpts below and extract the most relevant information to provide a direct answer.
 
 **Document Excerpts:**
 {context}
@@ -143,9 +154,7 @@ Read the following document excerpts carefully and extract the most relevant inf
 **Question:**
 {query}
 """
-
         source = "Retrieved Documents"
-        
     else:
         prompt = f"""
 No relevant document was found. Using general knowledge, provide a direct, evidence-based answer to the following question:
@@ -172,26 +181,21 @@ st.set_page_config("PharmInsight - Customizable Document Search", layout="center
 st.title("PharmInsight for Pharmacists")
 st.markdown("Ask your questions related to clinical guidelines, policies, or any relevant topics.")
 
-# Allow users to upload additional documents (optional)
+# Allow users to upload additional documents (text files and PDFs)
 st.markdown("### Upload Your Documents (Optional)")
-uploaded_files = st.file_uploader("Upload documents (text files)", accept_multiple_files=True, type=["txt"])
+uploaded_files = st.file_uploader("Upload documents (text or PDF files)", accept_multiple_files=True, type=["txt", "pdf"])
 
-# Process the user‑uploaded documents if files are provided
 user_index, user_docs = (None, [])
 if uploaded_files:
     user_index, user_docs = process_uploaded_documents(uploaded_files)
 
-# Load pre‑loaded documents (if available)
 pre_index, pre_docs = load_preloaded_index()
 
-# Input area for user query
 st.markdown("### Enter Your Query")
 query = st.text_input("Type your question here", placeholder="e.g., What is the recommended monitoring plan for amiodarone?")
 
-# Option to include detailed explanation and references in the answer
 include_explanation = st.checkbox("Include explanation and references", value=True)
 
-# Process the query when user clicks 'Submit'
 if st.button("Submit") and query:
     with st.spinner("Searching documents and generating answer..."):
         result = answer_query(query, pre_index, pre_docs, user_index, user_docs, include_explanation=include_explanation)
@@ -203,7 +207,6 @@ if st.button("Submit") and query:
     
     st.markdown(result["answer"], unsafe_allow_html=True)
     
-    # Optionally, display the sources used for the answer
     if result["results"]:
         with st.expander("📄 Sources Used"):
             for idx, doc in enumerate(result["results"]):
