@@ -1,0 +1,18 @@
+# Environment
+venv/
+.env
+__pycache__/
+*.py[cod]
+
+# Local data
+feedback_data/
+vector.index
+docs_metadata.pkl
+*.pkl
+*.index
+
+# Secrets
+.streamlit/secrets.toml
+
+# OS files
+.DS_Store
